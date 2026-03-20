@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Dict, List, Sequence
 
 import pandas as pd
 
 from . import __version__
-from .assembly_stats import compute_assembly_stats, assembly_stats_to_row, infer_genome_status
+from .assembly_stats import assembly_stats_to_row, compute_assembly_stats
 from .checkm2 import parse_checkm2_report
 from .coverage import parse_coverage_table
 from .gff_stats import gff_stats_to_row, parse_gff_stats
 from .metadata import parse_metadata_table
-from .pipeline import PipelineError, find_existing_gffs, run_bakta, run_prokka
+from .pipeline import (
+    PipelineError,
+    find_existing_gffs,
+    run_bakta,
+    run_checkm2,
+    run_prokka,
+)
 from .utils import (
     canonicalize_name,
     ensure_parent,
@@ -39,7 +46,6 @@ WIDE_COLUMNS = [
     "Sequencing coverage (×)",
     "Sequencing platforms",
     "Assembly method",
-    "Genome status",
     "CDSs",
     "tRNAs",
     "rRNAs",
@@ -51,7 +57,6 @@ WIDE_COLUMNS = [
     "16S rRNA sequence",
     "Completeness (%)",
     "Contamination (%)",
-    "Circularity",
 ]
 
 FEATURE_ORDER = [
@@ -68,7 +73,6 @@ FEATURE_ORDER = [
     "Sequencing coverage (×)",
     "Sequencing platforms",
     "Assembly method",
-    "Genome status",
     "CDSs",
     "tRNAs",
     "rRNAs",
@@ -80,8 +84,10 @@ FEATURE_ORDER = [
     "16S rRNA sequence",
     "Completeness (%)",
     "Contamination (%)",
-    "Circularity",
 ]
+
+
+LEGACY_SUBCOMMANDS = {"summarize", "pipeline"}
 
 
 def resolve_assemblies(paths: Sequence[str]) -> List[Path]:
@@ -117,12 +123,11 @@ def _apply_optional(df: pd.DataFrame, other: Dict[str, dict]) -> pd.DataFrame:
 def build_wide_dataframe(
     assemblies: Sequence[Path],
     gffs: Sequence[Path] | None = None,
-    checkm2_path: Path | None = None,
+    check_report_path: Path | None = None,
     coverage_path: Path | None = None,
     metadata_path: Path | None = None,
     sequencing_platforms: str | None = None,
     assembly_method: str | None = None,
-    genome_status: str | None = None,
 ) -> pd.DataFrame:
     assembly_rows = [assembly_stats_to_row(compute_assembly_stats(p)) for p in assemblies]
     df = pd.DataFrame(assembly_rows)
@@ -153,8 +158,8 @@ def build_wide_dataframe(
         }
         df = _apply_optional(df, gff_map)
 
-    if checkm2_path:
-        df = _apply_optional(df, parse_checkm2_report(checkm2_path))
+    if check_report_path:
+        df = _apply_optional(df, parse_checkm2_report(check_report_path))
 
     if coverage_path:
         df = _apply_optional(df, parse_coverage_table(coverage_path, assembly_size_map=assembly_size_map))
@@ -166,17 +171,6 @@ def build_wide_dataframe(
         df["Sequencing platforms"] = sequencing_platforms
     if assembly_method:
         df["Assembly method"] = assembly_method
-    if genome_status:
-        df["Genome status"] = genome_status
-
-    if "Genome status" not in df.columns:
-        df["Genome status"] = pd.NA
-    df["Genome status"] = df.apply(
-        lambda row: row["Genome status"]
-        if pd.notna(row["Genome status"]) and str(row["Genome status"]).strip()
-        else infer_genome_status(int(row["No. of contigs"]), str(row["Circularity"])),
-        axis=1,
-    )
 
     for col in WIDE_COLUMNS:
         if col not in df.columns:
@@ -235,7 +229,7 @@ def write_table(df: pd.DataFrame, path: Path) -> None:
     if path.suffix.lower() == ".csv":
         df.to_csv(path, index=False)
     else:
-        df.to_csv(path, sep="\t", index=False)
+        df.to_csv(path, sep="	", index=False)
 
 
 def write_outputs(
@@ -261,12 +255,11 @@ def write_outputs(
 def _run_summary(
     assemblies: Sequence[Path],
     gffs: Sequence[Path] | None,
-    checkm2_path: Path | None,
+    check_report_path: Path | None,
     coverage_path: Path | None,
     metadata_path: Path | None,
     sequencing_platforms: str | None,
     assembly_method: str | None,
-    genome_status: str | None,
     output: Path,
     feature_output: Path | None,
     xlsx_path: Path | None,
@@ -274,12 +267,11 @@ def _run_summary(
     wide_df = build_wide_dataframe(
         assemblies=assemblies,
         gffs=gffs,
-        checkm2_path=checkm2_path,
+        check_report_path=check_report_path,
         coverage_path=coverage_path,
         metadata_path=metadata_path,
         sequencing_platforms=sequencing_platforms,
         assembly_method=assembly_method,
-        genome_status=genome_status,
     )
     feature_df = None
     if feature_output or xlsx_path:
@@ -300,68 +292,71 @@ def _run_summary(
     return 0
 
 
-def cmd_summarize(args: argparse.Namespace) -> int:
-    assemblies = resolve_assemblies(args.assemblies)
-    gffs = resolve_gffs(args.gffs) or None
-    checkm2_path = Path(args.checkm2).resolve() if args.checkm2 else None
-    coverage_path = Path(args.coverage).resolve() if args.coverage else None
-    metadata_path = Path(args.metadata).resolve() if args.metadata else None
-    return _run_summary(
-        assemblies=assemblies,
-        gffs=gffs,
-        checkm2_path=checkm2_path,
-        coverage_path=coverage_path,
-        metadata_path=metadata_path,
-        sequencing_platforms=args.sequencing_platforms,
-        assembly_method=args.assembly_method,
-        genome_status=args.genome_status,
-        output=Path(args.output),
-        feature_output=Path(args.feature_output) if args.feature_output else None,
-        xlsx_path=Path(args.xlsx) if args.xlsx else None,
-    )
+def validate_args(args: argparse.Namespace) -> None:
+    if args.check and args.check_report:
+        raise SystemExit("Use either --check or --check-report, not both.")
+
+    if args.annotate in {"prokka", "bakta"} and args.gff:
+        raise SystemExit(
+            "--gff is only used for existing annotation files. Remove --gff or use --annotate existing/none."
+        )
+
+    if args.annotate not in {"prokka", "bakta"} and args.annotate_args:
+        raise SystemExit("--annotate-args can only be used with --annotate prokka or --annotate bakta.")
+
+    if args.annotate != "prokka" and args.kingdom != "auto":
+        raise SystemExit("--kingdom is only used with --annotate prokka.")
 
 
-def cmd_pipeline(args: argparse.Namespace) -> int:
-    assemblies = resolve_assemblies(args.assemblies)
-    workdir = Path(args.workdir).resolve()
-    workdir.mkdir(parents=True, exist_ok=True)
+def run_workflow(args: argparse.Namespace) -> int:
+    validate_args(args)
 
-    gffs: List[Path] = []
-    if args.annotation_mode == "prokka":
+    assemblies = resolve_assemblies(args.input)
+    explicit_gffs = resolve_gffs(args.gff)
+
+    if args.annotate == "prokka":
         gffs = run_prokka(
             assemblies=assemblies,
-            outdir=workdir / "prokka",
+            outdir=Path(args.workdir).resolve() / "prokka",
             threads=args.threads,
             kingdom=args.kingdom,
-            extra_args=args.annotation_extra_args,
+            extra_args=args.annotate_args,
             verbose=not args.quiet,
         )
-    elif args.annotation_mode == "bakta":
+    elif args.annotate == "bakta":
         gffs = run_bakta(
             assemblies=assemblies,
-            outdir=workdir / "bakta",
+            outdir=Path(args.workdir).resolve() / "bakta",
             threads=args.threads,
-            extra_args=args.annotation_extra_args,
+            extra_args=args.annotate_args,
             verbose=not args.quiet,
         )
-    elif args.annotation_mode == "existing":
-        gffs = find_existing_gffs(assemblies=assemblies, gff_inputs=resolve_gffs(args.gffs))
-    elif args.annotation_mode == "none":
-        gffs = []
+    elif args.annotate == "existing":
+        gffs = find_existing_gffs(assemblies=assemblies, gff_inputs=explicit_gffs)
+    else:
+        gffs = explicit_gffs
 
-    checkm2_path = Path(args.checkm2).resolve() if args.checkm2 else None
+    if args.check:
+        check_report_path = run_checkm2(
+            assemblies=assemblies,
+            outdir=Path(args.workdir).resolve() / "checkm2",
+            threads=args.threads,
+            verbose=not args.quiet,
+        )
+    else:
+        check_report_path = Path(args.check_report).resolve() if args.check_report else None
+
     coverage_path = Path(args.coverage).resolve() if args.coverage else None
     metadata_path = Path(args.metadata).resolve() if args.metadata else None
 
     return _run_summary(
         assemblies=assemblies,
         gffs=gffs or None,
-        checkm2_path=checkm2_path,
+        check_report_path=check_report_path,
         coverage_path=coverage_path,
         metadata_path=metadata_path,
         sequencing_platforms=args.sequencing_platforms,
         assembly_method=args.assembly_method,
-        genome_status=args.genome_status,
         output=Path(args.output),
         feature_output=Path(args.feature_output) if args.feature_output else None,
         xlsx_path=Path(args.xlsx) if args.xlsx else None,
@@ -371,64 +366,130 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="genochar",
-        description="Generate publication-ready genome characterization tables from FASTA, GFF, and CheckM2 outputs.",
+        description=(
+            "Generate publication-ready genome characterization tables from assembly FASTA files, "
+            "with optional annotation and CheckM2 execution."
+        ),
     )
-    parser.add_argument("-V", "--version", action="version", version=f"genochar {__version__}")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("-V", "--version", action="version", version=f"GenoChar {__version__}")
 
-    summarize = sub.add_parser(
-        "summarize",
-        help="Summarize existing FASTA/GFF/CheckM2/coverage/metadata files.",
+    primary = parser.add_argument_group("Primary inputs")
+    primary.add_argument(
+        "-i",
+        "--input",
+        nargs="+",
+        required=True,
+        help="Assembly FASTA files, directories, or glob patterns.",
     )
-    summarize.add_argument("--assemblies", nargs="+", required=True, help="Assembly FASTA files, directories, or glob patterns.")
-    summarize.add_argument("--gffs", nargs="+", help="Existing GFF/GFF3 files, directories, or glob patterns.")
-    summarize.add_argument("--checkm2", help="Existing CheckM2 quality_report.tsv path.")
-    summarize.add_argument("--coverage", help="Coverage TSV/CSV path.")
-    summarize.add_argument("--metadata", help="Metadata TSV/CSV path.")
-    summarize.add_argument("--sequencing-platforms", help="Set one sequencing platform string for all strains.")
-    summarize.add_argument("--assembly-method", help="Set one assembly method string for all strains.")
-    summarize.add_argument("--genome-status", help="Set one genome status string for all strains.")
-    summarize.add_argument("--output", default="genome_characterization.tsv", help="Main wide-table output (.tsv or .csv).")
-    summarize.add_argument("--feature-output", help="Optional feature-table output (.tsv or .csv).")
-    summarize.add_argument("--xlsx", help="Optional XLSX workbook with wide_table and feature_table sheets.")
-    summarize.set_defaults(func=cmd_summarize)
+    primary.add_argument(
+        "--gff",
+        nargs="+",
+        help="Existing GFF/GFF3 files, directories, or glob patterns.",
+    )
+    primary.add_argument(
+        "--check-report",
+        help="Existing CheckM2 quality_report.tsv file.",
+    )
+    primary.add_argument("--coverage", help="Coverage TSV/CSV path.")
+    primary.add_argument("--metadata", help="Metadata TSV/CSV path.")
 
-    pipeline = sub.add_parser(
-        "pipeline",
-        help="Optionally run Prokka/Bakta to make GFFs, then summarize. CheckM2 is read-only in this version.",
-    )
-    pipeline.add_argument("--assemblies", nargs="+", required=True, help="Assembly FASTA files, directories, or glob patterns.")
-    pipeline.add_argument(
-        "--annotation-mode",
-        choices=["prokka", "bakta", "existing", "none"],
+    workflow = parser.add_argument_group("Optional workflow")
+    workflow.add_argument(
+        "--annotate",
+        choices=["none", "prokka", "bakta", "existing"],
         default="none",
-        help="How to obtain GFFs. Default: none.",
+        help=(
+            "How to obtain GFF files: none (default), existing, prokka, or bakta. "
+            "Use 'existing' to reuse nearby GFFs or explicitly supplied --gff files."
+        ),
     )
-    pipeline.add_argument("--gffs", nargs="+", help="Existing GFF/GFF3 files, directories, or glob patterns.")
-    pipeline.add_argument("--kingdom", choices=["auto", "Bacteria", "Archaea"], default="auto", help="Passed to Prokka.")
-    pipeline.add_argument("--threads", type=int, default=8, help="Threads used for Prokka/Bakta.")
-    pipeline.add_argument("--workdir", default="genochar_work", help="Working directory for annotation outputs.")
-    pipeline.add_argument("--annotation-extra-args", help="Extra arguments passed to Prokka/Bakta as a single quoted string.")
-    pipeline.add_argument("--checkm2", help="Existing CheckM2 quality_report.tsv path.")
-    pipeline.add_argument("--coverage", help="Coverage TSV/CSV path.")
-    pipeline.add_argument("--metadata", help="Metadata TSV/CSV path.")
-    pipeline.add_argument("--sequencing-platforms", help="Set one sequencing platform string for all strains.")
-    pipeline.add_argument("--assembly-method", help="Set one assembly method string for all strains.")
-    pipeline.add_argument("--genome-status", help="Set one genome status string for all strains.")
-    pipeline.add_argument("--output", default="genome_characterization.tsv", help="Main wide-table output (.tsv or .csv).")
-    pipeline.add_argument("--feature-output", help="Optional feature-table output (.tsv or .csv).")
-    pipeline.add_argument("--xlsx", help="Optional XLSX workbook with wide_table and feature_table sheets.")
-    pipeline.add_argument("--quiet", action="store_true", help="Reduce logging.")
-    pipeline.set_defaults(func=cmd_pipeline)
+    workflow.add_argument(
+        "--annotate-args",
+        help="Extra arguments passed to Prokka or Bakta as a single quoted string.",
+    )
+    workflow.add_argument(
+        "--check",
+        action="store_true",
+        help="Run CheckM2 on the input assemblies and use the resulting quality_report.tsv.",
+    )
+
+    execution = parser.add_argument_group("Execution controls")
+    execution.add_argument(
+        "-k",
+        "--kingdom",
+        choices=["auto", "Bacteria", "Archaea"],
+        default="auto",
+        help="Passed to Prokka when --annotate prokka is used.",
+    )
+    execution.add_argument(
+        "-t",
+        "--threads",
+        type=int,
+        default=8,
+        help="Threads used for Prokka, Bakta, and CheckM2.",
+    )
+    execution.add_argument(
+        "-w",
+        "--workdir",
+        default="genochar_work",
+        help="Working directory for annotation and CheckM2 outputs.",
+    )
+    execution.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Reduce logging from external tools.",
+    )
+
+    metadata_group = parser.add_argument_group("Optional fixed metadata")
+    metadata_group.add_argument(
+        "--sequencing-platforms",
+        help="Set one sequencing platform string for all strains.",
+    )
+    metadata_group.add_argument(
+        "--assembly-method",
+        help="Set one assembly method string for all strains.",
+    )
+
+    outputs = parser.add_argument_group("Outputs")
+    outputs.add_argument(
+        "-o",
+        "--output",
+        default="genome_characterization.tsv",
+        help="Main wide-table output (.tsv or .csv).",
+    )
+    outputs.add_argument(
+        "-f",
+        "--feature-output",
+        help="Optional feature-table output (.tsv or .csv).",
+    )
+    outputs.add_argument(
+        "-x",
+        "--xlsx",
+        help="Optional XLSX workbook with wide_table and feature_table sheets.",
+    )
 
     return parser
 
 
+def _normalize_legacy_argv(argv: Sequence[str]) -> List[str]:
+    items = list(argv)
+    if items and items[0] in LEGACY_SUBCOMMANDS:
+        print(
+            "Note: legacy subcommands are deprecated in v0.6.1. Use 'genochar' directly.",
+            file=sys.stderr,
+        )
+        return items[1:]
+    return items
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    normalized_argv = _normalize_legacy_argv(raw_argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(normalized_argv)
     try:
-        return args.func(args)
+        return run_workflow(args)
     except PipelineError as exc:
         raise SystemExit(str(exc))
 

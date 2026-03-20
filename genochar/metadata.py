@@ -18,7 +18,6 @@ def parse_metadata_table(path: Path | str) -> Dict[str, dict]:
         coverage_col = find_column(reader.fieldnames, ["Sequencing coverage (×)", "Coverage (×)", "Coverage"])
         platforms_col = find_column(reader.fieldnames, ["Sequencing platforms", "Sequencing platform", "Platforms", "Platform"])
         assembly_col = find_column(reader.fieldnames, ["Assembly method", "Assembler", "Assembly"])
-        status_col = find_column(reader.fieldnames, ["Genome status", "Status"])
         repeat_col = find_column(reader.fieldnames, ["Repeat regions", "Repeat region", "Repeat count"])
 
         if not name_col:
@@ -37,7 +36,6 @@ def parse_metadata_table(path: Path | str) -> Dict[str, dict]:
                 "Sequencing coverage (×)": round(coverage, 2) if coverage is not None else None,
                 "Sequencing platforms": row.get(platforms_col) if platforms_col else None,
                 "Assembly method": row.get(assembly_col) if assembly_col else None,
-                "Genome status": row.get(status_col) if status_col else None,
                 "Repeat regions": int(repeat_regions) if repeat_regions is not None else None,
             }
         return out

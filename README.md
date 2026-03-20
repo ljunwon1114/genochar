@@ -1,19 +1,21 @@
-# genochar
+# GenoChar
 
-**genochar** generates publication-ready genome characterization tables for bacterial and archaeal draft or complete genomes.
+**GenoChar** generates publication-ready genome characterization tables for bacterial and archaeal genomes.
 
-This version is designed around a practical manuscript workflow:
+Version 0.6.1 uses a **single-command, summarize-first interface**:
 
 1. start from assembled **FASTA** files
-2. optionally create **GFF** files with **Prokka** or **Bakta**
-3. optionally reuse **existing GFF** files
-4. optionally read an **existing CheckM2** `quality_report.tsv`
-5. optionally read a **coverage table** and/or **metadata table**
+2. optionally add **existing GFF/GFF3** files
+3. optionally add an **existing CheckM2** `quality_report.tsv`
+4. optionally add a **coverage table** and/or **metadata table**
+5. optionally ask **GenoChar** (`genochar`) to run **Prokka**, **Bakta**, and/or **CheckM2**
 6. export a **wide characterization table** by default
 
-The default output is a wide table with one row per strain.
+The main output is a wide table with one row per strain. Optional outputs include a feature-style table and an Excel workbook.
 
-## What the tool can compute
+**Naming note:** the project/display name is **GenoChar**, while the Python package name and command-line executable remain lowercase as `genochar`.
+
+## What the tool computes
 
 ### FASTA-derived fields
 These work even if you provide only FASTA files:
@@ -29,11 +31,9 @@ These work even if you provide only FASTA files:
 - `L90`
 - `Longest contig (bp)`
 - `Gaps (N per 100 kb)`
-- `Genome status`
-- `Circularity`
 
 ### GFF-derived fields
-These are added when you provide GFF files or run annotation through `pipeline`:
+These are added when you provide GFF files or ask GenoChar (`genochar`) to create annotation files:
 
 - `CDSs`
 - `tRNAs`
@@ -46,7 +46,7 @@ These are added when you provide GFF files or run annotation through `pipeline`:
 - `16S rRNA sequence`
 
 ### CheckM2-derived fields
-These are added only if you provide an existing CheckM2 report:
+These are added when you provide or generate a CheckM2 report:
 
 - `Completeness (%)`
 - `Contamination (%)`
@@ -57,7 +57,7 @@ Optional input tables can add:
 - `Sequencing coverage (×)`
 - `Sequencing platforms`
 - `Assembly method`
-- `Genome status` (override)
+- `Repeat regions`
 
 ## Default output columns
 
@@ -77,7 +77,6 @@ The main output table contains:
 - `Sequencing coverage (×)`
 - `Sequencing platforms`
 - `Assembly method`
-- `Genome status`
 - `CDSs`
 - `tRNAs`
 - `rRNAs`
@@ -89,122 +88,90 @@ The main output table contains:
 - `16S rRNA sequence`
 - `Completeness (%)`
 - `Contamination (%)`
-- `Circularity`
 
 ## Installation
 
-### 1) Install genochar itself
-Clone the repository and install it into the currently active environment:
+Clone the repository and install it into the active Python environment:
 
 ```bash
-git clone https://github.com/ljunwon1114/genochar.git
+git clone https://github.com/ljunwon1114/GenoChar.git
 cd genochar
 pip install -e .
 ```
 
-### 2) Recommended environment strategy
+If you just want to install the latest GitHub version without cloning for development, you can also use:
 
-Because **Prokka**, **Bakta**, and **CheckM2** often have different dependency constraints, the easiest setup is:
+```bash
+pip install git+https://github.com/ljunwon1114/GenoChar.git
+```
 
-- one environment for **genochar + Prokka**
-- one environment for **genochar + Bakta**
-- one environment for **CheckM2**
+If you want GenoChar (`genochar`) to run annotation or CheckM2 internally, make sure optional executables are available on `PATH` as needed:
 
-`genochar` can still merge everything later because it accepts:
+- `prokka`
+- `bakta`
+- `checkm2`
 
-- existing GFF files
-- existing CheckM2 `quality_report.tsv`
-
-Detailed commands are in:
-- `docs/INSTALLATION_AND_WORKFLOWS.md`
-- `envs/genochar_prokka.yml`
-- `envs/genochar_bakta.yml`
-- `envs/checkm2.yml`
+If you already have GFF files and a CheckM2 report, you can stay in summarize-first mode and reuse existing files.
 
 ## Command overview
 
 ### A. FASTA only
 
 ```bash
-genochar summarize \
-  --assemblies "assemblies/*.fasta" \
-  --output genome_characterization.tsv
+genochar -i "assemblies/*.fasta" -o genome_characterization.tsv
 ```
 
-### B. FASTA + existing GFF + existing CheckM2
+### B. FASTA + existing GFF + existing CheckM2 report
 
 ```bash
-genochar summarize \
-  --assemblies "assemblies/*.fasta" \
-  --gffs "annotations/*.gff*" \
-  --checkm2 checkm2_out/quality_report.tsv \
-  --output genome_characterization.tsv
+genochar -i "assemblies/*.fasta" --gff "annotations/*.gff*" --check-report checkm2_out/quality_report.tsv -o genome_characterization.tsv
 ```
 
-### C. FASTA + Prokka annotation + existing CheckM2
+### C. FASTA + Prokka annotation + run CheckM2
 
 ```bash
-genochar pipeline \
-  --assemblies "assemblies/*.fasta" \
-  --annotation-mode prokka \
-  --kingdom Archaea \
-  --threads 8 \
-  --workdir genochar_work \
-  --checkm2 checkm2_out/quality_report.tsv \
-  --output genome_characterization.tsv
+genochar -i "assemblies/*.fasta" --annotate prokka -k Archaea -t 8 -w genochar_work --check -o genome_characterization.tsv
 ```
 
-### D. FASTA + Bakta annotation + existing CheckM2
+### D. FASTA + Bakta annotation + existing CheckM2 report
 
 ```bash
-genochar pipeline \
-  --assemblies "assemblies/*.fasta" \
-  --annotation-mode bakta \
-  --threads 8 \
-  --workdir genochar_work \
-  --checkm2 checkm2_out/quality_report.tsv \
-  --output genome_characterization.tsv
+genochar -i "assemblies/*.fasta" --annotate bakta -t 8 -w genochar_work --check-report checkm2_out/quality_report.tsv -o genome_characterization.tsv
 ```
 
-### E. Reuse existing GFFs
+### E. Reuse existing GFF files automatically
 
 ```bash
-genochar pipeline \
-  --assemblies "assemblies/*.fasta" \
-  --annotation-mode existing \
-  --gffs "annotations/*.gff*" \
-  --checkm2 checkm2_out/quality_report.tsv \
-  --output genome_characterization.tsv
+genochar -i "assemblies/*.fasta" --annotate existing --check-report checkm2_out/quality_report.tsv -o genome_characterization.tsv
+```
+
+### F. Reuse explicitly supplied GFF files in existing-annotation mode
+
+```bash
+genochar -i "assemblies/*.fasta" --annotate existing --gff "annotations/*.gff*" --check-report checkm2_out/quality_report.tsv -o genome_characterization.tsv
 ```
 
 ## Optional extra outputs
 
 ### Feature-style table
-If you also want the `Strain / Feature / Description` format:
 
 ```bash
-genochar summarize \
-  --assemblies "assemblies/*.fasta" \
-  --feature-output genome_characterization_feature.tsv \
-  --output genome_characterization.tsv
+genochar -i "assemblies/*.fasta" -f genome_characterization_feature.tsv -o genome_characterization.tsv
 ```
 
 ### Excel workbook
-To get both wide and feature tables in one workbook:
 
 ```bash
-genochar summarize \
-  --assemblies "assemblies/*.fasta" \
-  --xlsx genome_characterization.xlsx \
-  --output genome_characterization.tsv
+genochar -i "assemblies/*.fasta" -x genome_characterization.xlsx -o genome_characterization.tsv
 ```
 
 ## Coverage input
+
 Coverage cannot be derived from FASTA alone. If you want to fill `Sequencing coverage (×)`, provide a coverage table.
 
 Example:
 
-```tsv
+```text
 Strain	Coverage
 IOH03	55.7
 IOH05	50.3
@@ -212,31 +179,31 @@ IOH05	50.3
 
 or
 
-```tsv
+```text
 Strain	Total bases
 IOH03	110.8 Mbp
 IOH05	107.6 Mbp
 ```
 
-If `Total bases` is provided, `genochar` computes:
+If `Total bases` is provided, GenoChar computes:
 
 ```text
 Sequencing coverage (×) = Total bases / Genome size
 ```
 
 ## Metadata input
+
 Optional metadata columns include:
 
 - `Strain`
 - `Sequencing platforms`
 - `Assembly method`
-- `Genome status`
 - `Repeat regions`
 - `Sequencing coverage (×)`
 
 Example:
 
-```tsv
+```text
 Strain	Sequencing platforms	Assembly method
 IOH03	Illumina iSeq 100	Unicycler (short-read assembly)
 IOH05	Illumina iSeq 100	Unicycler (short-read assembly)
@@ -244,18 +211,15 @@ IOH05	Illumina iSeq 100	Unicycler (short-read assembly)
 
 ## Notes
 
-- In this version, **CheckM2 is read-only**. Run it separately and pass `--checkm2 quality_report.tsv`.
-- `pipeline` can still create GFF files using **Prokka** or **Bakta**, or reuse existing GFF files.
-- If more than one 16S rRNA feature is found, `genochar` stores the **longest 16S sequence** in the main table.
-- `Genome status` is inferred if not explicitly provided:
-  - `Complete genome` if there is one contig and circularity is detected
-  - `Draft genome` otherwise
-
-## Example output shape
-
-| Strain | Genome size (bp) | No. of contigs | N50 (bp) | CDSs | 16S rRNA sequence | Completeness (%) |
-|---|---:|---:|---:|---:|---|---:|
-| IOH03 | 1,990,719 | 3 | 1,175,002 | 2,092 | ATTCCGGTT... | 98.53 |
+- **GenoChar** is summarize-first by default. If you only pass FASTA, GFF, CheckM2, coverage, and metadata inputs, it behaves like a direct summarization tool.
+- `--annotate prokka` or `--annotate bakta` tells GenoChar to create annotation files before building the final table.
+- `--annotate existing` tells GenoChar to reuse nearby GFF files or explicitly supplied `--gff` inputs.
+- `--check` runs CheckM2 internally and automatically integrates the resulting `quality_report.tsv` into the final table.
+- `--check-report` reuses an existing CheckM2 `quality_report.tsv` file.
+- `--check` and `--check-report` are mutually exclusive.
+- `--gff` is intended for existing annotation files and should not be combined with `--annotate prokka` or `--annotate bakta`.
+- If more than one 16S rRNA feature is found, GenoChar stores the longest 16S sequence in the main table.
+- Legacy `genochar summarize ...` and `genochar pipeline ...` calls are still accepted in v0.6.1, but the preferred interface is the single-command form shown above.
 
 ## License
 

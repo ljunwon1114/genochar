@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "genochar"
-version = "0.4.0"
-description = "Publication-ready genome characterization table generator for bacterial and archaeal genomes"
+name = "GenoChar"
+version = "0.6.1"
+description = "GenoChar: single-command, summarize-first genome characterization workflow for bacterial and archaeal genomes"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -30,8 +30,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ljunwon1114/genochar"
-Issues = "https://github.com/ljunwon1114/genochar/issues"
+Homepage = "https://github.com/ljunwon1114/GenoChar"
+Issues = "https://github.com/ljunwon1114/GenoChar/issues"
 
 [project.scripts]
 genochar = "genochar.cli:main"

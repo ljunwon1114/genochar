@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, List, Tuple
@@ -22,7 +21,6 @@ class AssemblyStats:
     longest_contig_bp: int
     n_count: int
     gaps_n_per_100kb: float
-    circularity: str
 
 
 def iter_fasta_records(path: Path | str) -> Iterator[Tuple[str, str]]:
@@ -70,39 +68,14 @@ def calc_lx(lengths: List[int], fraction: float) -> int:
     return 0
 
 
-def header_is_circular(header: str) -> bool:
-    h = header.lower()
-    patterns = [
-        r"circular\s*=\s*(true|yes|1)",
-        r"topology\s*=\s*circular",
-        r"\[topology=circular\]",
-        r"\[circular=true\]",
-        r"\bcircular\b",
-    ]
-    return any(re.search(p, h) for p in patterns)
-
-
-def detect_circularity(headers: List[str], contigs: int) -> str:
-    if not headers:
-        return "not detected"
-    circular_count = sum(1 for h in headers if header_is_circular(h))
-    if circular_count == 0:
-        return "not detected"
-    if circular_count == contigs:
-        return "detected (all contigs)"
-    return f"detected ({circular_count}/{contigs} contigs)"
-
-
 def compute_assembly_stats(path: Path | str) -> AssemblyStats:
     strain = infer_strain_name(path)
     lengths: List[int] = []
-    headers: List[str] = []
     gc = 0
     atgc = 0
     n_count = 0
 
-    for header, seq in iter_fasta_records(path):
-        headers.append(header)
+    for _, seq in iter_fasta_records(path):
         seq_upper = seq.upper()
         lengths.append(len(seq_upper))
         gc += seq_upper.count("G") + seq_upper.count("C")
@@ -117,7 +90,6 @@ def compute_assembly_stats(path: Path | str) -> AssemblyStats:
     n90 = calc_nx(lengths, 0.9)
     l50 = calc_lx(lengths, 0.5)
     l90 = calc_lx(lengths, 0.9)
-    circularity = detect_circularity(headers, contigs)
     gaps_n_per_100kb = (n_count / genome_size * 100000) if genome_size else 0.0
 
     return AssemblyStats(
@@ -133,14 +105,7 @@ def compute_assembly_stats(path: Path | str) -> AssemblyStats:
         longest_contig_bp=longest,
         n_count=n_count,
         gaps_n_per_100kb=gaps_n_per_100kb,
-        circularity=circularity,
     )
-
-
-def infer_genome_status(contigs: int, circularity: str) -> str:
-    if contigs == 1 and circularity != "not detected":
-        return "Complete genome"
-    return "Draft genome"
 
 
 def assembly_stats_to_row(stats: AssemblyStats) -> dict:
@@ -155,7 +120,5 @@ def assembly_stats_to_row(stats: AssemblyStats) -> dict:
         "L90": stats.l90,
         "Longest contig (bp)": stats.longest_contig_bp,
         "Gaps (N per 100 kb)": round(stats.gaps_n_per_100kb, 2),
-        "Circularity": stats.circularity,
-        "Genome status": infer_genome_status(stats.contigs, stats.circularity),
         "_assembly_path": stats.assembly_path,
     }

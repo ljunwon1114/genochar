@@ -1,1 +1,0 @@
-Publication-ready genome characterization table generator for bacterial and archaeal genomes from FASTA, GFF, and CheckM2 outputs.
