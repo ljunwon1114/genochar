@@ -12,11 +12,11 @@ from .assembly_stats import assembly_stats_to_row, compute_assembly_stats
 from .checkm2 import parse_checkm2_report
 from .coverage import parse_coverage_table
 from .gff_stats import gff_stats_to_row, parse_gff_stats
+from .managed_envs import SetupError, default_base_dir, setup_managed_tools
 from .metadata import parse_metadata_table
 from .pipeline import (
     PipelineError,
     find_existing_gffs,
-    run_bakta,
     run_checkm2,
     run_prokka,
 )
@@ -34,6 +34,9 @@ from .utils import (
 WIDE_COLUMNS = [
     "Strain",
     "Strain name",
+    "Genus",
+    "Species",
+    "Accession",
     "Genome size (bp)",
     "GC content (%)",
     "No. of contigs",
@@ -50,6 +53,7 @@ WIDE_COLUMNS = [
     "tRNAs",
     "rRNAs",
     "tmRNA",
+    "misc RNA",
     "Repeat regions",
     "16S rRNA count",
     "16S rRNA length (bp)",
@@ -61,6 +65,9 @@ WIDE_COLUMNS = [
 
 FEATURE_ORDER = [
     "Strain name",
+    "Genus",
+    "Species",
+    "Accession",
     "Genome size (bp)",
     "GC content (%)",
     "No. of contigs",
@@ -77,6 +84,7 @@ FEATURE_ORDER = [
     "tRNAs",
     "rRNAs",
     "tmRNA",
+    "misc RNA",
     "Repeat regions",
     "16S rRNA count",
     "16S rRNA length (bp)",
@@ -85,7 +93,6 @@ FEATURE_ORDER = [
     "Completeness (%)",
     "Contamination (%)",
 ]
-
 
 LEGACY_SUBCOMMANDS = {"summarize", "pipeline"}
 
@@ -97,10 +104,12 @@ def resolve_assemblies(paths: Sequence[str]) -> List[Path]:
     return found
 
 
+
 def resolve_gffs(paths: Sequence[str] | None) -> List[Path]:
     if not paths:
         return []
     return [p for p in resolve_inputs(paths, kind="gff") if looks_like_gff(p)]
+
 
 
 def _apply_optional(df: pd.DataFrame, other: Dict[str, dict]) -> pd.DataFrame:
@@ -118,6 +127,7 @@ def _apply_optional(df: pd.DataFrame, other: Dict[str, dict]) -> pd.DataFrame:
             if value is not None and not (isinstance(value, str) and value == ""):
                 df.at[idx, col] = value
     return df
+
 
 
 def build_wide_dataframe(
@@ -180,6 +190,7 @@ def build_wide_dataframe(
     return df
 
 
+
 def _format_feature_value(feature: str, value) -> str:
     if pd.isna(value):
         return ""
@@ -189,7 +200,7 @@ def _format_feature_value(feature: str, value) -> str:
 
     if feature in {
         "Genome size (bp)", "No. of contigs", "N50 (bp)", "N90 (bp)", "L50", "L90",
-        "Longest contig (bp)", "CDSs", "tRNAs", "rRNAs", "tmRNA",
+        "Longest contig (bp)", "CDSs", "tRNAs", "rRNAs", "tmRNA", "misc RNA",
         "Repeat regions", "16S rRNA count", "16S rRNA length (bp)",
     }:
         try:
@@ -204,6 +215,7 @@ def _format_feature_value(feature: str, value) -> str:
             return str(value)
 
     return str(value)
+
 
 
 def build_feature_dataframe(wide_df: pd.DataFrame) -> pd.DataFrame:
@@ -224,12 +236,14 @@ def build_feature_dataframe(wide_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Strain", "Feature", "Description"])
 
 
+
 def write_table(df: pd.DataFrame, path: Path) -> None:
     path = ensure_parent(path)
     if path.suffix.lower() == ".csv":
         df.to_csv(path, index=False)
     else:
-        df.to_csv(path, sep="	", index=False)
+        df.to_csv(path, sep="\t", index=False)
+
 
 
 def write_outputs(
@@ -250,6 +264,7 @@ def write_outputs(
             wide_df.to_excel(writer, index=False, sheet_name="wide_table")
             if feature_df is not None:
                 feature_df.to_excel(writer, index=False, sheet_name="feature_table")
+
 
 
 def _run_summary(
@@ -292,20 +307,22 @@ def _run_summary(
     return 0
 
 
+
 def validate_args(args: argparse.Namespace) -> None:
     if args.check and args.check_report:
         raise SystemExit("Use either --check or --check-report, not both.")
 
-    if args.annotate in {"prokka", "bakta"} and args.gff:
+    if args.annotate == "prokka" and args.gff:
         raise SystemExit(
             "--gff is only used for existing annotation files. Remove --gff or use --annotate existing/none."
         )
 
-    if args.annotate not in {"prokka", "bakta"} and args.annotate_args:
-        raise SystemExit("--annotate-args can only be used with --annotate prokka or --annotate bakta.")
+    if args.annotate != "prokka" and args.annotate_args:
+        raise SystemExit("--annotate-args can only be used with --annotate prokka.")
 
     if args.annotate != "prokka" and args.kingdom != "auto":
         raise SystemExit("--kingdom is only used with --annotate prokka.")
+
 
 
 def run_workflow(args: argparse.Namespace) -> int:
@@ -313,28 +330,6 @@ def run_workflow(args: argparse.Namespace) -> int:
 
     assemblies = resolve_assemblies(args.input)
     explicit_gffs = resolve_gffs(args.gff)
-
-    if args.annotate == "prokka":
-        gffs = run_prokka(
-            assemblies=assemblies,
-            outdir=Path(args.workdir).resolve() / "prokka",
-            threads=args.threads,
-            kingdom=args.kingdom,
-            extra_args=args.annotate_args,
-            verbose=not args.quiet,
-        )
-    elif args.annotate == "bakta":
-        gffs = run_bakta(
-            assemblies=assemblies,
-            outdir=Path(args.workdir).resolve() / "bakta",
-            threads=args.threads,
-            extra_args=args.annotate_args,
-            verbose=not args.quiet,
-        )
-    elif args.annotate == "existing":
-        gffs = find_existing_gffs(assemblies=assemblies, gff_inputs=explicit_gffs)
-    else:
-        gffs = explicit_gffs
 
     if args.check:
         check_report_path = run_checkm2(
@@ -345,6 +340,20 @@ def run_workflow(args: argparse.Namespace) -> int:
         )
     else:
         check_report_path = Path(args.check_report).resolve() if args.check_report else None
+
+    if args.annotate == "prokka":
+        gffs = run_prokka(
+            assemblies=assemblies,
+            outdir=Path(args.workdir).resolve() / "prokka",
+            threads=args.threads,
+            kingdom=args.kingdom,
+            extra_args=args.annotate_args,
+            verbose=not args.quiet,
+        )
+    elif args.annotate == "existing":
+        gffs = find_existing_gffs(assemblies=assemblies, gff_inputs=explicit_gffs)
+    else:
+        gffs = explicit_gffs
 
     coverage_path = Path(args.coverage).resolve() if args.coverage else None
     metadata_path = Path(args.metadata).resolve() if args.metadata else None
@@ -363,12 +372,35 @@ def run_workflow(args: argparse.Namespace) -> int:
     )
 
 
-def build_parser() -> argparse.ArgumentParser:
+
+def run_setup(args: argparse.Namespace) -> int:
+    cfg = setup_managed_tools(
+        base_dir=args.base_dir,
+        with_prokka=not args.skip_prokka,
+        with_checkm2=not args.skip_checkm2,
+        checkm2_db=args.checkm2_db,
+        force=args.force,
+        verbose=not args.quiet,
+    )
+    print(f"Wrote setup config: {cfg.config_path}")
+    if cfg.prokka_prefix:
+        print(f"Managed Prokka environment: {cfg.prokka_prefix}")
+    if cfg.checkm2_prefix:
+        print(f"Managed CheckM2 environment: {cfg.checkm2_prefix}")
+    if cfg.checkm2_db:
+        print(f"CheckM2 database: {cfg.checkm2_db}")
+    print("Setup complete. You can now run: genochar -i <assemblies> --check --annotate prokka ...")
+    return 0
+
+
+
+def build_workflow_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="genochar",
         description=(
             "Generate publication-ready genome characterization tables from assembly FASTA files, "
-            "with optional annotation and CheckM2 execution."
+            "with optional managed Prokka annotation and CheckM2 execution. "
+            "Run 'genochar setup' once to prepare managed tool environments."
         ),
     )
     parser.add_argument("-V", "--version", action="version", version=f"GenoChar {__version__}")
@@ -396,21 +428,21 @@ def build_parser() -> argparse.ArgumentParser:
     workflow = parser.add_argument_group("Optional workflow")
     workflow.add_argument(
         "--annotate",
-        choices=["none", "prokka", "bakta", "existing"],
+        choices=["none", "prokka", "existing"],
         default="none",
         help=(
-            "How to obtain GFF files: none (default), existing, prokka, or bakta. "
+            "How to obtain GFF files: none (default), existing, or prokka. "
             "Use 'existing' to reuse nearby GFFs or explicitly supplied --gff files."
         ),
     )
     workflow.add_argument(
         "--annotate-args",
-        help="Extra arguments passed to Prokka or Bakta as a single quoted string.",
+        help="Extra arguments passed to Prokka as a single quoted string.",
     )
     workflow.add_argument(
         "--check",
         action="store_true",
-        help="Run CheckM2 on the input assemblies and use the resulting quality_report.tsv.",
+        help="Run CheckM2 on the resolved input assemblies before annotation and use the resulting quality_report.tsv.",
     )
 
     execution = parser.add_argument_group("Execution controls")
@@ -426,7 +458,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--threads",
         type=int,
         default=8,
-        help="Threads used for Prokka, Bakta, and CheckM2.",
+        help="Threads used for Prokka and CheckM2.",
     )
     execution.add_argument(
         "-w",
@@ -472,25 +504,80 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+
+def build_setup_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="genochar setup",
+        description=(
+            "Create managed Prokka and CheckM2 conda environments under ~/.genochar "
+            "and store the resulting configuration for GenoChar to use automatically."
+        ),
+    )
+    parser.add_argument(
+        "--base-dir",
+        default=str(default_base_dir()),
+        help="Base directory for managed environments and config (default: ~/.genochar).",
+    )
+    parser.add_argument(
+        "--checkm2-db",
+        help=(
+            "Existing CheckM2 .dmnd file or a directory containing it. "
+            "If omitted, GenoChar setup reuses $CHECKM2DB if set, otherwise downloads the database."
+        ),
+    )
+    parser.add_argument(
+        "--skip-prokka",
+        action="store_true",
+        help="Do not create the managed Prokka environment.",
+    )
+    parser.add_argument(
+        "--skip-checkm2",
+        action="store_true",
+        help="Do not create the managed CheckM2 environment.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recreate managed environments even if they already exist.",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Reduce logging during setup.",
+    )
+    return parser
+
+
+
 def _normalize_legacy_argv(argv: Sequence[str]) -> List[str]:
     items = list(argv)
     if items and items[0] in LEGACY_SUBCOMMANDS:
         print(
-            "Note: legacy subcommands are deprecated in v0.6.1. Use 'genochar' directly.",
+            "Note: legacy subcommands are deprecated in v0.6.3.2. Use 'genochar' directly.",
             file=sys.stderr,
         )
         return items[1:]
     return items
 
 
+
 def main(argv: Sequence[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] == "setup":
+        setup_parser = build_setup_parser()
+        setup_args = setup_parser.parse_args(raw_argv[1:])
+        try:
+            return run_setup(setup_args)
+        except (PipelineError, SetupError) as exc:
+            raise SystemExit(str(exc))
+
     normalized_argv = _normalize_legacy_argv(raw_argv)
-    parser = build_parser()
+    parser = build_workflow_parser()
     args = parser.parse_args(normalized_argv)
     try:
         return run_workflow(args)
-    except PipelineError as exc:
+    except (PipelineError, SetupError) as exc:
         raise SystemExit(str(exc))
 
 

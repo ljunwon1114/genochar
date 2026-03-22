@@ -16,3 +16,4 @@ env/
 *.xlsx
 results/
 work/
+*.egg-info/

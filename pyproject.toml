@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "GenoChar"
-version = "0.6.1"
-description = "GenoChar: single-command, summarize-first genome characterization workflow for bacterial and archaeal genomes"
+version = "0.6.3.2"
+description = "GenoChar: summarize-first genome characterization workflow with one-time managed setup for Prokka and CheckM2"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
   {name = "Jun Won Lee"}
@@ -22,7 +22,6 @@ keywords = [
   "archaea",
   "checkm2",
   "prokka",
-  "bakta",
 ]
 dependencies = [
   "pandas>=2.0",

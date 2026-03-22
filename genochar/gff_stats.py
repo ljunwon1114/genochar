@@ -14,6 +14,7 @@ class GFFStats:
     tRNAs: int
     rRNAs: int
     tmRNA: int
+    misc_rna: int
     repeat_regions: int
     rrna16s_count: int
     rrna16s_length_bp: int | None
@@ -72,6 +73,36 @@ def _looks_like_tmrna(feature_type: str, attrs: Dict[str, str]) -> bool:
     )
 
 
+def _looks_like_misc_rna(feature_type: str, attrs: Dict[str, str]) -> bool:
+    feature_type_l = feature_type.lower().replace("-", "_")
+    blob = _blob(feature_type, attrs)
+
+    if _looks_like_16s(feature_type, attrs) or _looks_like_tmrna(feature_type, attrs):
+        return False
+
+    if feature_type_l in {"misc_rna", "miscrna"}:
+        return True
+    if "misc_rna" in blob or "misc rna" in blob:
+        return True
+
+    if feature_type_l in {"ncrna", "ncrna_gene", "non_coding_rna", "ncrna_region"}:
+        if any(pat in blob for pat in [
+            "ribosomal rna",
+            " rrna",
+            "rrna ",
+            "transfer rna",
+            "trna",
+            "tmrna",
+            "transfer-messenger rna",
+            "ssra",
+            "16s",
+        ]):
+            return False
+        return True
+
+    return False
+
+
 def _looks_like_repeat(feature_type: str, attrs: Dict[str, str]) -> bool:
     feature_type_l = feature_type.lower()
     blob = _blob(feature_type, attrs)
@@ -102,6 +133,7 @@ def parse_gff_stats(path: Path | str, assembly_path: Path | str | None = None) -
     trna = 0
     rrna = 0
     tmrna = 0
+    misc_rna = 0
     repeat_regions = 0
     rrna16s_records: List[Tuple[int, str | None, str | None]] = []
 
@@ -137,6 +169,9 @@ def parse_gff_stats(path: Path | str, assembly_path: Path | str | None = None) -
             if _looks_like_tmrna(feature_l, attrs):
                 tmrna += 1
 
+            if _looks_like_misc_rna(feature_l, attrs):
+                misc_rna += 1
+
             if _looks_like_repeat(feature_l, attrs):
                 repeat_regions += 1
 
@@ -163,6 +198,7 @@ def parse_gff_stats(path: Path | str, assembly_path: Path | str | None = None) -
         tRNAs=trna,
         rRNAs=rrna,
         tmRNA=tmrna,
+        misc_rna=misc_rna,
         repeat_regions=repeat_regions,
         rrna16s_count=len(rrna16s_records),
         rrna16s_length_bp=longest_len,
@@ -178,6 +214,7 @@ def gff_stats_to_row(stats: GFFStats) -> dict:
         "tRNAs": stats.tRNAs,
         "rRNAs": stats.rRNAs,
         "tmRNA": stats.tmRNA,
+        "misc RNA": stats.misc_rna,
         "Repeat regions": stats.repeat_regions,
         "16S rRNA count": stats.rrna16s_count,
         "16S rRNA length (bp)": stats.rrna16s_length_bp,

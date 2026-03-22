@@ -18,6 +18,9 @@ def parse_metadata_table(path: Path | str) -> Dict[str, dict]:
         coverage_col = find_column(reader.fieldnames, ["Sequencing coverage (×)", "Coverage (×)", "Coverage"])
         platforms_col = find_column(reader.fieldnames, ["Sequencing platforms", "Sequencing platform", "Platforms", "Platform"])
         assembly_col = find_column(reader.fieldnames, ["Assembly method", "Assembler", "Assembly"])
+        genus_col = find_column(reader.fieldnames, ["Genus", "Genus name"])
+        species_col = find_column(reader.fieldnames, ["Species", "Species name", "Specific epithet"])
+        accession_col = find_column(reader.fieldnames, ["Accession", "Assembly accession", "Genome accession", "NCBI accession", "RefSeq accession", "GenBank accession"])
         repeat_col = find_column(reader.fieldnames, ["Repeat regions", "Repeat region", "Repeat count"])
 
         if not name_col:
@@ -36,6 +39,9 @@ def parse_metadata_table(path: Path | str) -> Dict[str, dict]:
                 "Sequencing coverage (×)": round(coverage, 2) if coverage is not None else None,
                 "Sequencing platforms": row.get(platforms_col) if platforms_col else None,
                 "Assembly method": row.get(assembly_col) if assembly_col else None,
+                "Genus": row.get(genus_col).strip() if genus_col and row.get(genus_col) else None,
+                "Species": row.get(species_col).strip() if species_col and row.get(species_col) else None,
+                "Accession": row.get(accession_col).strip() if accession_col and row.get(accession_col) else None,
                 "Repeat regions": int(repeat_regions) if repeat_regions is not None else None,
             }
         return out

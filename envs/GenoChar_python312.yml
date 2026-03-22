@@ -1,0 +1,12 @@
+name: GenoChar
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pandas>=2.0
+  - openpyxl>=3.1
+  - prokka
+  - checkm2

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Sequence
 
+from .managed_envs import load_config
 from .utils import infer_strain_name
 
 
@@ -13,20 +15,55 @@ class PipelineError(RuntimeError):
     pass
 
 
-def require_executable(name: str) -> None:
-    if shutil.which(name) is None:
-        raise PipelineError(f"Required executable not found on PATH: {name}")
+_TOOL_TO_PREFIX_KEY = {
+    "prokka": "prokka_prefix",
+    "checkm2": "checkm2_prefix",
+}
 
 
-def run_command(cmd: Sequence[str], verbose: bool = True) -> None:
+
+def _resolve_tool_invocation(name: str) -> tuple[list[str], dict[str, str] | None]:
+    direct = shutil.which(name)
+    if direct is not None:
+        env = os.environ.copy()
+        cfg = load_config()
+        if name == "checkm2" and cfg and cfg.checkm2_db:
+            env["CHECKM2DB"] = cfg.checkm2_db
+        return [name], env
+
+    cfg = load_config()
+    if cfg is not None:
+        prefix_attr = _TOOL_TO_PREFIX_KEY.get(name)
+        prefix = getattr(cfg, prefix_attr, None) if prefix_attr else None
+        conda_exe = cfg.conda_exe or os.environ.get("CONDA_EXE") or shutil.which("conda")
+        if prefix and conda_exe:
+            env = os.environ.copy()
+            if name == "checkm2" and cfg.checkm2_db:
+                env["CHECKM2DB"] = cfg.checkm2_db
+            return [conda_exe, "run", "--no-capture-output", "-p", str(prefix), name], env
+
+    if name == "checkm2":
+        raise PipelineError(
+            "Required executable not found for CheckM2. Run 'genochar setup' or install checkm2 on PATH."
+        )
+    if name == "prokka":
+        raise PipelineError(
+            "Required executable not found for Prokka. Run 'genochar setup' or install prokka on PATH."
+        )
+    raise PipelineError(f"Required executable not found on PATH: {name}")
+
+
+
+def run_command(cmd: Sequence[str], verbose: bool = True, env: dict[str, str] | None = None) -> None:
     if verbose:
         print(">>", " ".join(shlex.quote(c) for c in cmd))
     try:
-        subprocess.run(list(cmd), check=True)
+        subprocess.run(list(cmd), check=True, env=env)
     except subprocess.CalledProcessError as exc:
         raise PipelineError(
             f"Command failed with exit code {exc.returncode}: {' '.join(shlex.quote(c) for c in cmd)}"
         ) from exc
+
 
 
 def run_prokka(
@@ -37,7 +74,7 @@ def run_prokka(
     extra_args: str | None = None,
     verbose: bool = True,
 ) -> List[Path]:
-    require_executable("prokka")
+    prokka_cmd, env = _resolve_tool_invocation("prokka")
     outdir.mkdir(parents=True, exist_ok=True)
 
     gffs: List[Path] = []
@@ -47,7 +84,7 @@ def run_prokka(
         sample_out.mkdir(parents=True, exist_ok=True)
 
         cmd = [
-            "prokka",
+            *prokka_cmd,
             "--outdir", str(sample_out),
             "--prefix", strain,
             "--force",
@@ -58,67 +95,20 @@ def run_prokka(
         if extra_args:
             cmd += shlex.split(extra_args)
         cmd.append(str(asm))
-        run_command(cmd, verbose=verbose)
+        run_command(cmd, verbose=verbose, env=env)
         gff = sample_out / f"{strain}.gff"
         gffs.append(gff)
 
     return gffs
 
 
-def run_bakta(
-    assemblies: Sequence[Path],
-    outdir: Path,
-    threads: int = 8,
-    extra_args: str | None = None,
-    verbose: bool = True,
-) -> List[Path]:
-    require_executable("bakta")
-    outdir.mkdir(parents=True, exist_ok=True)
 
-    gffs: List[Path] = []
-    for asm in assemblies:
-        strain = infer_strain_name(asm)
-        sample_out = outdir / strain
-        sample_out.mkdir(parents=True, exist_ok=True)
+def _resolve_checkm2_database_path() -> str | None:
+    cfg = load_config()
+    if cfg is not None and cfg.checkm2_db:
+        return cfg.checkm2_db
+    return os.environ.get("CHECKM2DB")
 
-        cmd = [
-            "bakta",
-            "--output", str(sample_out),
-            "--prefix", strain,
-            "--keep-contig-headers",
-            "--force",
-            "--threads", str(threads),
-        ]
-        if extra_args:
-            cmd += shlex.split(extra_args)
-        cmd.append(str(asm))
-        run_command(cmd, verbose=verbose)
-
-        candidate_gffs = [
-            sample_out / f"{strain}.gff3",
-            sample_out / f"{strain}.gff",
-        ]
-        gff = next((p for p in candidate_gffs if p.exists()), candidate_gffs[0])
-        gffs.append(gff)
-
-    return gffs
-
-
-def _prepare_checkm2_inputs(assemblies: Sequence[Path], input_dir: Path) -> None:
-    if input_dir.exists():
-        shutil.rmtree(input_dir)
-    input_dir.mkdir(parents=True, exist_ok=True)
-
-    for asm in assemblies:
-        strain = infer_strain_name(asm)
-        staged = input_dir / f"{strain}.fa"
-        source = Path(asm).resolve()
-        if staged.exists() or staged.is_symlink():
-            staged.unlink()
-        try:
-            staged.symlink_to(source)
-        except OSError:
-            shutil.copy2(source, staged)
 
 
 def run_checkm2(
@@ -127,26 +117,34 @@ def run_checkm2(
     threads: int = 8,
     verbose: bool = True,
 ) -> Path:
-    require_executable("checkm2")
+    checkm2_cmd, env = _resolve_tool_invocation("checkm2")
     outdir.mkdir(parents=True, exist_ok=True)
 
-    input_dir = outdir / "input_bins"
-    _prepare_checkm2_inputs(assemblies, input_dir)
+    assembly_inputs = [str(Path(asm).resolve()) for asm in assemblies]
+    if not assembly_inputs:
+        raise PipelineError("No assembly FASTA files were provided to CheckM2.")
 
     cmd = [
-        "checkm2",
+        *checkm2_cmd,
         "predict",
         "--threads", str(threads),
-        "--input", str(input_dir),
+        "--input",
+        *assembly_inputs,
         "--output-directory", str(outdir),
         "--force",
     ]
-    run_command(cmd, verbose=verbose)
+
+    db_path = _resolve_checkm2_database_path()
+    if db_path:
+        cmd += ["--database_path", db_path]
+
+    run_command(cmd, verbose=verbose, env=env)
 
     report = outdir / "quality_report.tsv"
     if not report.exists():
         raise PipelineError(f"CheckM2 finished without producing: {report}")
     return report
+
 
 
 def find_existing_gffs(assemblies: Sequence[Path], gff_inputs: Sequence[Path] | None = None) -> List[Path]:
@@ -168,7 +166,7 @@ def find_existing_gffs(assemblies: Sequence[Path], gff_inputs: Sequence[Path] | 
         if hit is None:
             raise PipelineError(
                 f"Could not locate an existing GFF/GFF3 for assembly: {asm}. "
-                "Provide --gff explicitly or choose --annotate prokka/bakta/none."
+                "Provide --gff explicitly or choose --annotate prokka/none."
             )
         found.append(hit)
     return found
